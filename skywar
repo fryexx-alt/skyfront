@@ -1,0 +1,1479 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Front Map — рисование зон контроля</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    * { user-select: none; -webkit-user-select: none; box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: 'Inter', 'Segoe UI', Arial, sans-serif; background: #05070a; overflow: hidden; height: 100%; color: #e8e8e8; }
+    #map { width: 100vw; height: 100vh; cursor: crosshair; position: relative; }
+    #map.panning { cursor: grabbing !important; }
+    #map.drawing { cursor: crosshair !important; }
+    #map::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 0%, transparent 60%, rgba(0,0,0,0.38) 100%); z-index: 500; }
+
+    .leaflet-overlay-pane svg path.zone-path { transition: filter 0.3s ease; }
+    .leaflet-overlay-pane svg path.zone-path[data-mode="ru"] { filter: drop-shadow(0 0 4px rgba(198, 40, 40, 0.85)); }
+    .leaflet-overlay-pane svg path.zone-path[data-mode="ua"] { filter: drop-shadow(0 0 3px rgba(76, 175, 80, 0.4)); }
+    .leaflet-overlay-pane svg path.zone-path[data-mode="buffer"] { filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.3)); }
+
+
+    .leaflet-snapshotPane-pane svg path[data-mode="ru"] { filter: drop-shadow(0 0 4px rgba(198, 40, 40, 0.85)); }
+    .leaflet-snapshotPane-pane svg path[data-mode="ua"] { filter: drop-shadow(0 0 3px rgba(76, 175, 80, 0.4)); }
+    .leaflet-snapshotPane-pane svg path[data-mode="buffer"] { filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.3)); }
+
+    .ripple { position: absolute; width: 20px; height: 20px; border: 3px solid #fff; border-radius: 50%; transform: translate(-50%, -50%) scale(0.2); pointer-events: none; opacity: 0.9; animation: rippleOut 1.6s cubic-bezier(0.22, 1, 0.36, 1) forwards; z-index: 550; }
+    @keyframes rippleOut { 0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.9; border-width: 3px; } 60% { opacity: 0.5; } 100% { transform: translate(-50%, -50%) scale(14); opacity: 0; border-width: 1px; } }
+
+    .float-area { position: absolute; transform: translate(-50%, -50%); font-weight: 800; font-size: 18px; letter-spacing: 0.5px; text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 0 16px currentColor; pointer-events: none; animation: floatUp 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; z-index: 560; white-space: nowrap; }
+    @keyframes floatUp { 0% { transform: translate(-50%, -50%) scale(0.6); opacity: 0; } 20% { transform: translate(-50%, -80%) scale(1.1); opacity: 1; } 100% { transform: translate(-50%, -220%) scale(1); opacity: 0; } }
+
+    .panel { position: absolute; top: 16px; left: 16px; z-index: 1000; background: linear-gradient(145deg, rgba(24, 28, 36, 0.92), rgba(14, 17, 22, 0.96)); backdrop-filter: blur(14px) saturate(160%); -webkit-backdrop-filter: blur(14px) saturate(160%); padding: 16px; border-radius: 14px; box-shadow: 0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06) inset, 0 1px 0 rgba(255,255,255,0.08) inset; display: flex; flex-direction: column; gap: 8px; min-width: 250px; border: 1px solid rgba(255,255,255,0.06); transition: transform 0.3s ease; }
+    .panel:hover { transform: translateY(-2px); }
+    .panel-header { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .logo { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg, #c62828 0%, #2e7d32 100%); display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 4px 12px rgba(198, 40, 40, 0.4), 0 0 0 1px rgba(255,255,255,0.1) inset; flex-shrink: 0; animation: logoPulse 3s ease-in-out infinite; }
+    @keyframes logoPulse { 0%, 100% { transform: rotate(0deg) scale(1); } 50% { transform: rotate(-8deg) scale(1.05); } }
+    .panel-title-block { flex: 1; min-width: 0; }
+    .panel-title { font-size: 15px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: #fff; background: linear-gradient(90deg, #fff 0%, #b8b8b8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .panel-subtitle { font-size: 10px; color: #6b7280; letter-spacing: 0.5px; margin-top: -2px; }
+
+    .header-controls { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .lang-switch { display: flex; background: rgba(0,0,0,0.4); border-radius: 8px; padding: 2px; border: 1px solid rgba(255,255,255,0.06); }
+    .lang-btn { background: transparent; border: none; color: #6b7280; font-family: inherit; font-size: 11px; font-weight: 700; padding: 5px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s ease; letter-spacing: 0.5px; text-transform: uppercase; }
+    .lang-btn:hover { color: #fff; }
+    .lang-btn.active { background: linear-gradient(135deg, rgba(255,214,0,0.2), rgba(255,150,0,0.15)); color: #ffd600; box-shadow: 0 2px 6px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,214,0,0.3) inset; }
+    .sound-toggle { width: 28px; height: 28px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.4); color: #6b7280; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; transition: all 0.2s ease; }
+    .sound-toggle:hover { color: #fff; border-color: rgba(255,255,255,0.15); }
+    .sound-toggle.on { color: #ffd600; box-shadow: 0 0 0 1px rgba(255,214,0,0.4) inset; }
+
+    .current-mode { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 12px; padding: 8px 12px; margin-bottom: 4px; color: #aaa; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.04); }
+    .current-mode strong { color: #fff; font-weight: 700; }
+    .mode-dot { width: 8px; height: 8px; border-radius: 50%; transition: background 0.3s, box-shadow 0.3s; animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.55; transform: scale(1.15); } }
+
+    .btn { padding: 10px 14px; border: none; border-radius: 9px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit; transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1); color: #fff; display: flex; align-items: center; justify-content: space-between; gap: 8px; position: relative; overflow: hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.12) inset; letter-spacing: 0.2px; }
+    .btn::before { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0)); pointer-events: none; }
+    .btn::after { content: ''; position: absolute; top: 0; left: -100%; width: 60%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent); transform: skewX(-25deg); transition: left 0.6s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: none; }
+    .btn:hover::after { left: 130%; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.15) inset; }
+    .btn:active { transform: translateY(0) scale(0.98); }
+    .btn .kbd-hint { font-size: 10px; opacity: 0.55; background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-family: 'SF Mono', Consolas, monospace; }
+    .btn-ru { background: linear-gradient(135deg, #c62828 0%, #8e0000 100%); }
+    .btn-ua { background: linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%); }
+    .btn-undo { background: linear-gradient(135deg, #6a1b9a 0%, #4a148c 100%); }
+    .btn-clear { background: linear-gradient(135deg, #424242 0%, #212121 100%); }
+    .btn-save { background: linear-gradient(135deg, #00897b 0%, #004d40 100%); }
+    .btn-load { background: linear-gradient(135deg, #ef6c00 0%, #bf360c 100%); }
+    .btn-reset { background: linear-gradient(135deg, #b71c1c 0%, #7f0000 100%); }
+    .btn.active { box-shadow: 0 0 0 2px #ffd600, 0 0 20px rgba(255, 214, 0, 0.4), 0 6px 16px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.15) inset; transform: translateY(-1px); }
+    .btn.active::after { content: ''; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; background: #ffd600; border-radius: 50%; box-shadow: 0 0 8px #ffd600; animation: pulse 1.5s ease-in-out infinite; }
+    .row { display: flex; gap: 6px; }
+    .row .btn { flex: 1; padding: 9px 8px; font-size: 12px; }
+    .row .btn .kbd-hint { display: none; }
+
+    .stats { margin-top: 8px; padding: 12px; border-radius: 9px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.04); color: #bbb; font-size: 12px; line-height: 1.7; }
+    .stats-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: #6b7280; margin-bottom: 8px; }
+    .stat-row { display: flex; align-items: center; justify-content: space-between; padding: 3px 0; font-variant-numeric: tabular-nums; }
+    .stat-row .stat-label { display: flex; align-items: center; gap: 6px; color: #ccc; font-weight: 500; }
+    .stat-row .stat-value { font-weight: 700; color: #fff; font-size: 12px; transition: color 0.3s, text-shadow 0.3s; }
+    .stat-row .stat-value.bump { color: #ffd600; text-shadow: 0 0 12px rgba(255, 214, 0, 0.8); }
+    .stat-row .stat-unit { color: #6b7280; font-weight: 500; font-size: 11px; }
+    .stat-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+
+    .hint { margin-top: 8px; padding: 10px; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); font-size: 10.5px; color: #6b7280; line-height: 1.7; }
+    .hint kbd { background: rgba(255,255,255,0.08); padding: 2px 5px; border-radius: 4px; font-family: 'SF Mono', Consolas, monospace; font-size: 9.5px; color: #d1d5db; border: 1px solid rgba(255,255,255,0.06); }
+    .hint .badge-auto { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; margin-top: 6px; background: linear-gradient(135deg, rgba(224,224,224,0.25), rgba(158,158,158,0.15)); border: 1px solid rgba(224,224,224,0.4); border-radius: 5px; color: #e0e0e0; font-size: 10px; font-weight: 600; }
+
+    .legend { position: absolute; bottom: 20px; left: 16px; z-index: 1000; background: linear-gradient(145deg, rgba(24, 28, 36, 0.92), rgba(14, 17, 22, 0.96)); backdrop-filter: blur(14px) saturate(160%); -webkit-backdrop-filter: blur(14px) saturate(160%); padding: 12px 16px; border-radius: 12px; font-size: 12px; color: #eee; box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06) inset; border: 1px solid rgba(255,255,255,0.06); }
+    .legend-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: #6b7280; margin-bottom: 6px; }
+    .legend-item { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-weight: 500; }
+    .color-box { width: 16px; height: 16px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 2px 6px rgba(0,0,0,0.4), 0 1px 0 rgba(255,255,255,0.15) inset; flex-shrink: 0; position: relative; overflow: hidden; }
+    .color-box::after { content: ''; position: absolute; inset: 0; background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,0.5) 50%, transparent 70%); animation: shimmer 2.4s linear infinite; }
+    @keyframes shimmer { 0% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
+
+    .compass { position: absolute; bottom: 20px; right: 20px; z-index: 1000; width: 76px; height: 76px; pointer-events: none; opacity: 0.85; filter: drop-shadow(0 4px 12px rgba(0,0,0,0.7)); }
+    .compass .ring { fill: rgba(20, 24, 32, 0.85); stroke: rgba(255, 214, 0, 0.4); stroke-width: 1; }
+    .compass .tick { stroke: rgba(255,255,255,0.35); stroke-width: 1; }
+    .compass .tick-major { stroke: rgba(255,214,0,0.85); stroke-width: 1.5; }
+    .compass .needle-n { fill: #c62828; }
+    .compass .needle-s { fill: #2e7d32; }
+    .compass .center { fill: #fff; }
+    .compass text { fill: #fff; font-family: 'Inter', sans-serif; font-size: 9px; font-weight: 800; text-anchor: middle; }
+    .compass .letter-n { fill: #ff5252; }
+    .compass .letter-s { fill: #81c784; }
+    .compass .needle-wrapper { animation: compassSway 6s ease-in-out infinite; transform-origin: 38px 38px; }
+    @keyframes compassSway { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
+
+    .toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%) translateY(-20px); z-index: 2000; background: linear-gradient(145deg, rgba(28, 32, 42, 0.96), rgba(18, 20, 26, 0.98)); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); color: #fff; padding: 12px 22px; border-radius: 12px; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: none; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 12px 32px rgba(0,0,0,0.6); white-space: nowrap; letter-spacing: 0.2px; }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    .loading-banner { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2001; background: linear-gradient(145deg, rgba(24, 28, 36, 0.96), rgba(14, 17, 22, 0.98)); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); color: #fff; padding: 18px 32px; border-radius: 14px; font-size: 14px; font-weight: 500; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 16px 40px rgba(0,0,0,0.7); transition: opacity 0.4s, transform 0.4s; display: flex; align-items: center; gap: 14px; }
+    .loading-banner.hidden { opacity: 0; transform: translate(-50%, -50%) scale(0.9); pointer-events: none; }
+    .spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.15); border-top-color: #ffd600; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .leaflet-control-zoom { border: none !important; box-shadow: 0 6px 20px rgba(0,0,0,0.55) !important; border-radius: 10px !important; overflow: hidden; margin-right: 20px !important; margin-bottom: 110px !important; }
+    .leaflet-control-zoom a { background: linear-gradient(145deg, rgba(24, 28, 36, 0.96), rgba(14, 17, 22, 0.98)) !important; color: #fff !important; border: none !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; width: 34px !important; height: 34px !important; line-height: 34px !important; font-size: 18px !important; font-weight: 300 !important; }
+    .leaflet-control-zoom a:hover { background: rgba(40, 46, 58, 0.96) !important; color: #ffd600 !important; }
+    .leaflet-control-zoom a:last-child { border-bottom: none !important; }
+    .leaflet-control-attribution { display: none; }
+
+    @keyframes slideIn { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
+    .panel { animation: slideIn 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+    .legend { animation: slideIn 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+    <div class="panel-header">
+        <div class="logo">⚔️</div>
+        <div class="panel-title-block">
+            <div class="panel-title">Front Map</div>
+            <div class="panel-subtitle" data-i18n="subtitle">Редактор зон контроля</div>
+        </div>
+        <div class="header-controls">
+            <div class="lang-switch">
+                <button class="lang-btn active" id="lang-ru" onclick="setLang('ru')">RU</button>
+                <button class="lang-btn" id="lang-ua" onclick="setLang('ua')">UA</button>
+            </div>
+            <button class="sound-toggle on" id="sound-toggle" onclick="toggleSound()" title="Звук">🔊</button>
+        </div>
+    </div>
+
+    <div class="current-mode">
+        <span class="mode-dot" id="mode-dot" style="background:#c62828; box-shadow:0 0 8px #c62828;"></span>
+        <span data-i18n="mode">Режим:</span> <strong id="current-mode-label" data-i18n="ru">Россия</strong>
+    </div>
+
+    <button class="btn btn-ru active" id="btn-ru" onclick="setMode('ru')">
+        <span>🔴 <span data-i18n="ru">Россия</span></span>
+        <span class="kbd-hint">1</span>
+    </button>
+    <button class="btn btn-ua" id="btn-ua" onclick="setMode('ua')">
+        <span>🟢 <span data-i18n="ua">Украина</span></span>
+        <span class="kbd-hint">2</span>
+    </button>
+
+    <div class="row">
+        <button class="btn btn-undo" onclick="undo()">↩️ <span data-i18n="undo">Отмена</span></button>
+        <button class="btn btn-clear" onclick="clearAll()">🗑 <span data-i18n="clear">Очистить</span></button>
+    </div>
+    <div class="row">
+        <button class="btn btn-save" onclick="saveState()">💾 <span data-i18n="save">Сохранить</span></button>
+        <button class="btn btn-load" onclick="loadState()">📂 <span data-i18n="load">Загрузить</span></button>
+    </div>
+    <button class="btn btn-reset" onclick="resetToFront()">🔄 <span data-i18n="reset">Сбросить к фронту</span></button>
+
+    <div class="stats">
+        <div class="stats-title" data-i18n="stats">Статистика</div>
+        <div class="stat-row">
+            <span class="stat-label"><span class="stat-dot" style="background:#c62828; color:#c62828;"></span><span data-i18n="ru">Россия</span></span>
+            <span class="stat-value"><span id="stat-ru">0</span> <span data-i18n="zones">зон</span> · <span id="area-ru">0</span> <span class="stat-unit">км²</span></span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label"><span class="stat-dot" style="background:#2e7d32; color:#2e7d32;"></span><span data-i18n="ua">Украина</span></span>
+            <span class="stat-value"><span id="stat-ua">0</span> <span data-i18n="zones">зон</span> · <span id="area-ua">0</span> <span class="stat-unit">км²</span></span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label"><span class="stat-dot" style="background:#e0e0e0; color:#e0e0e0;"></span><span data-i18n="bufferShort">Буфер</span></span>
+            <span class="stat-value"><span id="stat-buffer">0</span> <span data-i18n="zones">зон</span> · <span id="area-buffer">0</span> <span class="stat-unit">км²</span></span>
+        </div>
+    </div>
+
+    <div class="hint" id="hint-block"></div>
+</div>
+
+<div class="legend">
+    <div class="legend-title" data-i18n="legend">Легенда</div>
+    <div class="legend-item"><div class="color-box" style="background:linear-gradient(135deg,#c62828,#8e0000);"></div> <span data-i18n="legendRu">Контроль России</span></div>
+    <div class="legend-item"><div class="color-box" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);"></div> <span data-i18n="legendUa">Контроль Украины</span></div>
+    <div class="legend-item"><div class="color-box" style="background:linear-gradient(135deg,rgba(230,230,230,0.45),rgba(180,180,180,0.45));"></div> <span data-i18n="legendBuffer">Буферная зона</span></div>
+</div>
+
+<svg class="compass" viewBox="0 0 76 76" xmlns="http://www.w3.org/2000/svg">
+    <circle class="ring" cx="38" cy="38" r="34"/>
+    <line class="tick-major" x1="38" y1="4"  x2="38" y2="10"/>
+    <line class="tick-major" x1="38" y1="66" x2="38" y2="72"/>
+    <line class="tick-major" x1="4"  y1="38" x2="10" y2="38"/>
+    <line class="tick-major" x1="66" y1="38" x2="72" y2="38"/>
+    <line class="tick" x1="55" y1="9"  x2="52" y2="14"/>
+    <line class="tick" x1="67" y1="21" x2="62" y2="24"/>
+    <line class="tick" x1="67" y1="55" x2="62" y2="52"/>
+    <line class="tick" x1="55" y1="67" x2="52" y2="62"/>
+    <line class="tick" x1="21" y1="67" x2="24" y2="62"/>
+    <line class="tick" x1="9"  y1="55" x2="14" y2="52"/>
+    <line class="tick" x1="9"  y1="21" x2="14" y2="24"/>
+    <line class="tick" x1="21" y1="9"  x2="24" y2="14"/>
+    <g class="needle-wrapper">
+        <polygon class="needle-n" points="38,12 34,38 42,38"/>
+        <polygon class="needle-s" points="38,64 34,38 42,38"/>
+    </g>
+    <circle class="center" cx="38" cy="38" r="2"/>
+    <text class="letter-n" x="38" y="20">N</text>
+    <text class="letter-s" x="38" y="60">S</text>
+</svg>
+
+<div class="toast" id="toast"></div>
+<div class="loading-banner" id="loading-banner">
+    <div class="spinner"></div>
+    <span data-i18n="loading">Загрузка актуального фронта…</span>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+<script>
+// ============================================================
+// 1. i18n
+// ============================================================
+const i18n = {
+    ru: {
+        subtitle: 'Редактор зон контроля', mode: 'Режим:', ru: 'Россия', ua: 'Украина',
+        buffer: 'Буферная зона', bufferShort: 'Буфер', undo: 'Отмена', clear: 'Очистить',
+        save: 'Сохранить', load: 'Загрузить', reset: 'Сбросить к фронту',
+        stats: 'Статистика', zones: 'зон', legend: 'Легенда',
+        legendRu: 'Контроль России', legendUa: 'Контроль Украины', legendBuffer: 'Буферная зона',
+        loading: 'Загрузка актуального фронта…',
+        hint: '<kbd>ЛКМ</kbd> рисовать · <kbd>ПКМ</kbd> двигать · <kbd>Колесо</kbd> зум<br><kbd>1</kbd><kbd>2</kbd> стороны · <kbd>Ctrl+Z</kbd> отмена · <kbd>Esc</kbd> прервать<br><span class="badge-auto">🛡️ Буфер 2 км создаётся автоматически</span>',
+        toasts: {
+            tooFewPoints: 'Слишком мало точек', tooSmall: 'Слишком маленькая область',
+            selfIntersect: 'Ошибка: полигон самопересекается', cancel: 'Рисование отменено',
+            captured: 'территория захвачена', bufferAuto: 'создана буферная зона',
+            undone: 'Отменено', nothingToUndo: 'Нечего отменять', cleared: 'Очищено',
+            reset: 'Сброшено к реальному фронту', saved: 'Сохранено',
+            saveErr: 'Ошибка сохранения', noSave: 'Нет сохранения', loaded: 'Загружено',
+            loadErr: 'Ошибка загрузки', frontLoaded: 'Актуальный фронт загружен',
+            frontErr: 'Фронт не загружен', timeout: 'Данные долго грузятся — работаем без фронта',
+            ukrBaseErr: 'Не удалось загрузить границы Украины',
+            outside: 'Вне территории Украины'
+        }
+    },
+    ua: {
+        subtitle: 'Редактор зон контролю', mode: 'Режим:', ru: 'Росія', ua: 'Україна',
+        buffer: 'Буферна зона', bufferShort: 'Буфер', undo: 'Скасувати', clear: 'Очистити',
+        save: 'Зберегти', load: 'Завантажити', reset: 'Скинути до фронту',
+        stats: 'Статистика', zones: 'зон', legend: 'Легенда',
+        legendRu: 'Контроль Росії', legendUa: 'Контроль України', legendBuffer: 'Буферна зона',
+        loading: 'Завантаження актуального фронту…',
+        hint: '<kbd>ЛКМ</kbd> малювати · <kbd>ПКМ</kbd> рухати · <kbd>Колесо</kbd> зум<br><kbd>1</kbd><kbd>2</kbd> сторони · <kbd>Ctrl+Z</kbd> скасувати · <kbd>Esc</kbd> перервати<br><span class="badge-auto">🛡️ Буфер 2 км створюється автоматично</span>',
+        toasts: {
+            tooFewPoints: 'Замало точок', tooSmall: 'Замала область',
+            selfIntersect: 'Помилка: полігон самоперетинається', cancel: 'Малювання скасовано',
+            captured: 'територію захоплено', bufferAuto: 'створено буферну зону',
+            undone: 'Скасовано', nothingToUndo: 'Немає що скасовувати', cleared: 'Очищено',
+            reset: 'Скинуто до реального фронту', saved: 'Збережено',
+            saveErr: 'Помилка збереження', noSave: 'Немає збереження', loaded: 'Завантажено',
+            loadErr: 'Помилка завантаження', frontLoaded: 'Актуальний фронт завантажено',
+            frontErr: 'Фронт не завантажено', timeout: 'Дані довго вантажаться — працюємо без фронту',
+            ukrBaseErr: 'Не вдалось завантажити кордони України',
+            outside: 'Поза територією України'
+        }
+    }
+};
+
+let currentLang = 'ru';
+const t = (key) => {
+    const parts = key.split('.');
+    let v = i18n[currentLang];
+    for (const p of parts) { v = v && v[p]; }
+    return v || key;
+};
+
+function setLang(lang) {
+    currentLang = lang;
+    try { localStorage.setItem('frontmap_lang', lang); } catch(e) {}
+    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+    const btn = document.getElementById('lang-' + lang);
+    if (btn) btn.classList.add('active');
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        const val = t(key);
+        if (typeof val === 'string' && val.indexOf('<') >= 0) el.innerHTML = val;
+        else el.textContent = val;
+    });
+    const lbl = document.getElementById('current-mode-label');
+    if (lbl) lbl.textContent = t(currentMode);
+    const hint = document.getElementById('hint-block');
+    if (hint) hint.innerHTML = t('hint');
+}
+
+// ============================================================
+// 2. Звук
+// ============================================================
+let soundEnabled = true;
+let audioCtx = null;
+try { soundEnabled = localStorage.getItem('frontmap_sound') !== 'off'; } catch(e) {}
+
+function toggleSound() {
+    soundEnabled = !soundEnabled;
+    try { localStorage.setItem('frontmap_sound', soundEnabled ? 'on' : 'off'); } catch(e) {}
+    const btn = document.getElementById('sound-toggle');
+    btn.classList.toggle('on', soundEnabled);
+    btn.textContent = soundEnabled ? '🔊' : '🔇';
+    if (soundEnabled) playBeep(880, 0.08, 0.05);
+}
+
+function playBeep(freq, dur, vol) {
+    if (!soundEnabled) return;
+    try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(freq * 0.6, audioCtx.currentTime + dur);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        osc.start();
+        osc.stop(audioCtx.currentTime + dur);
+    } catch(e) {}
+}
+
+// ============================================================
+// 3. Loading
+// ============================================================
+const loadingBanner = document.getElementById('loading-banner');
+let loadingHidden = false;
+function hideLoading() {
+    if (loadingHidden) return;
+    loadingHidden = true;
+    if (!loadingBanner) return;
+    loadingBanner.classList.add('hidden');
+    setTimeout(() => { try { loadingBanner.style.display = 'none'; } catch(e) {} }, 400);
+}
+setTimeout(() => {
+    if (!loadingHidden) { hideLoading(); showToast('⚠️ ' + t('toasts.timeout')); }
+}, 90000);
+
+// ============================================================
+// 4. Toast
+// ============================================================
+let toastTimer;
+function showToast(msg) {
+    const el = document.getElementById('toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ============================================================
+// 5. Проверки
+// ============================================================
+if (typeof L === 'undefined') { document.body.innerHTML = '<div style="color:#fff;padding:20px;">Leaflet не загрузился.</div>'; hideLoading(); throw new Error('Leaflet missing'); }
+if (typeof turf === 'undefined') { document.body.innerHTML = '<div style="color:#fff;padding:20px;">Turf.js не загрузился.</div>'; hideLoading(); throw new Error('Turf missing'); }
+
+// ============================================================
+// 6. Карта
+// ============================================================
+const map = L.map('map', {
+    zoomControl: false, attributionControl: false, dragging: false,
+    boxZoom: false, doubleClickZoom: false, keyboard: false
+}).setView([48.0, 36.5], 7);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_49j4_1_8009405b2b67d93deaa9010d', {
+    subdomains: 'abcd', maxZoom: 19
+}).addTo(map);
+
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+map.createPane('snapshotPane');
+map.getPane('snapshotPane').style.zIndex = 450;
+map.getPane('snapshotPane').style.pointerEvents = 'none';
+map.createPane('wavePane');
+map.getPane('wavePane').style.zIndex = 460;
+map.getPane('wavePane').style.pointerEvents = 'none';
+
+const COLORS = {
+    ru:     { fill: '#c62828', stroke: '#8e0000', glow: '#c62828' },
+    ua:     { fill: '#2e7d32', stroke: '#1b5e20', glow: '#4caf50' },
+    buffer: { fill: '#e8e8e8', stroke: '#9e9e9e', glow: '#ffffff' }
+};
+
+let currentMode = 'ru';
+const drawnItems = L.featureGroup().addTo(map);
+const snapshotLayer = L.featureGroup().addTo(map);
+let history = [];
+let baseHistory = [];   // фронт на старте
+let undoStack = [];     // снимки истории для отмены
+let captureLog = [];    // ходы пользователя (для сохранения)
+const mergedCache = { ru: null, ua: null, buffer: null };
+const activeTempLayers = [];
+
+// ✅ Параметры
+const BUFFER_WIDTH_KM = 2;     // ширина буферной зоны на фронте — ровно 2 км
+const MIN_UA_PART_KM2 = 100;   // мелкие островки Украины внутри оккупации убираем
+const SIMPLIFY_TOL = 0.0008;   // упрощение геометрии (~80 м) для скорости
+let UKR_FEATURE = null;        // «вся Украина» (граница + оккупированное) — для обрезки рисования
+
+// ============================================================
+// 6b. Утилиты
+// ============================================================
+function splitToPolygons(feature) {
+    if (!feature) return [];
+    try {
+        const geom = feature.geometry || feature;
+        if (!geom) return [];
+        if (geom.type === 'Polygon') return [turf.polygon(geom.coordinates)];
+        if (geom.type === 'MultiPolygon') return geom.coordinates.map(c => turf.polygon(c));
+        if (geom.type === 'FeatureCollection') {
+            const result = [];
+            (geom.features || []).forEach(f => {
+                splitToPolygons(f).forEach(p => result.push(p));
+            });
+            return result;
+        }
+        return [feature];
+    } catch(e) { return []; }
+}
+
+function unionArray(features) {
+    let layer = (features || []).filter(f => f);
+    if (!layer.length) return null;
+    // турф v6: union(a, b) — сливаем попарно «деревом», это быстрее цепочки
+    while (layer.length > 1) {
+        const next = [];
+        for (let i = 0; i < layer.length; i += 2) {
+            if (i + 1 >= layer.length) { next.push(layer[i]); break; }
+            let u = null;
+            try { u = turf.union(layer[i], layer[i + 1]); } catch (e) {}
+            if (u) next.push(u); else { next.push(layer[i]); next.push(layer[i + 1]); }
+        }
+        if (next.length >= layer.length) {
+            // ничего не слилось — собираем как MultiPolygon, чтобы не зациклиться
+            const coords = [];
+            layer.forEach(f => splitToPolygons(f).forEach(p => {
+                if (p.geometry && p.geometry.type === 'Polygon') coords.push(p.geometry.coordinates);
+            }));
+            return coords.length ? turf.multiPolygon(coords) : layer[0];
+        }
+        layer = next;
+    }
+    return layer[0];
+}
+
+function intersectRobust(a, b) {
+    if (!a || !b) return null;
+    try {
+        const direct = turf.intersect(a, b);
+        if (direct) return direct;
+    } catch(e) {}
+    const aParts = splitToPolygons(a);
+    const bParts = splitToPolygons(b);
+    const results = [];
+    for (const ap of aParts) {
+        for (const bp of bParts) {
+            try {
+                const inter = turf.intersect(ap, bp);
+                if (inter && turf.area(inter) > 1000) results.push(inter);
+            } catch(e) {}
+        }
+    }
+    return unionArray(results);
+}
+
+function differenceRobust(a, b) {
+    if (!a || !b) return a;
+    try {
+        const direct = turf.difference(a, b);
+        if (direct !== undefined) return direct;
+    } catch(e) {}
+    const aParts = splitToPolygons(a);
+    const bParts = splitToPolygons(b);
+    const results = [];
+    for (const ap of aParts) {
+        let remainder = ap;
+        for (const bp of bParts) {
+            if (!remainder) break;
+            try {
+                remainder = turf.difference(remainder, bp);
+            } catch(e) {}
+        }
+        if (remainder && turf.area(remainder) > 1000) results.push(remainder);
+    }
+    return unionArray(results);
+}
+
+function safeBuffer(f, km) {
+    if (!f) return null;
+    try { return turf.buffer(f, km, { units: 'kilometers', steps: 6 }) || null; }
+    catch(e) { return null; }
+}
+
+function simplifySafe(f) {
+    try { return turf.simplify(f, { tolerance: SIMPLIFY_TOL, highQuality: false, mutate: false }) || f; }
+    catch (e) { return f; }
+}
+
+// вычесть cutter из feat; null — если ничего не осталось
+function subtractFeature(feat, cutter) {
+    if (!feat) return null;
+    if (!cutter) return feat;
+    const diff = differenceRobust(feat, cutter);
+    if (!diff) return null;
+    try { if (turf.area(diff) < 1000) return null; } catch (e) {}
+    return diff;
+}
+
+function paddedBox(feature, padDeg) {
+    const b = turf.bbox(feature);
+    return turf.bboxPolygon([b[0] - padDeg, b[1] - padDeg, b[2] + padDeg, b[3] + padDeg]);
+}
+
+function filterSmallParts(feature, minAreaKm2) {
+    if (!feature) return feature;
+    try {
+        const minAreaM2 = minAreaKm2 * 1e6;
+        const parts = splitToPolygons(feature);
+        const kept = parts.filter(p => {
+            try { return turf.area(p) >= minAreaM2; } catch(e) { return false; }
+        });
+        if (kept.length === 0) return null;
+        if (kept.length === 1) return kept[0];
+        return unionArray(kept);
+    } catch(e) { return feature; }
+}
+
+// ============================================================
+// 7. Загрузка данных
+// ============================================================
+const NE_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson';
+const UKR_FALLBACK_URL = 'https://raw.githubusercontent.com/johan/world.geo.json/master/countries/UKR.geo.json';
+const DS_REPO = 'cyterat/deepstate-map-data';
+const DS_RAW_BASES = [
+    'https://raw.githubusercontent.com/' + DS_REPO + '/main/',
+    'https://raw.githubusercontent.com/' + DS_REPO + '/master/'
+];
+
+function setLoadingText(txt) {
+    const el = loadingBanner && loadingBanner.querySelector('span');
+    if (el) { el.removeAttribute('data-i18n'); el.textContent = txt; }
+}
+const tick = () => new Promise(r => setTimeout(r, 40));
+
+// Граница Украины: сначала Natural Earth 50m (точнее), иначе грубая 110m
+async function loadUkr() {
+    const sources = [{ url: NE_URL, ne: true }, { url: UKR_FALLBACK_URL, ne: false }];
+    for (const src of sources) {
+        try {
+            const r = await fetch(src.url);
+            if (!r.ok) continue;
+            const d = await r.json();
+            const feats = d.features || [];
+            const f = src.ne
+                ? feats.find(x => { const p = x.properties || {}; return p.ADM0_A3 === 'UKR' || p.ISO_A3 === 'UKR' || p.ADMIN === 'Ukraine' || p.NAME === 'Ukraine'; })
+                : feats[0];
+            if (f && f.geometry) { console.log('UKR source:', src.ne ? 'Natural Earth 50m' : 'world.geo.json'); return { feature: f, fine: src.ne }; }
+        } catch (e) { console.warn('UKR err:', src.url, e.message); }
+    }
+    return null;
+}
+const ukrPromise = loadUkr();
+
+function ymd(d) {
+    return d.getUTCFullYear() + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0');
+}
+function dsDate(name) {
+    const m = /(\d{4})-?(\d{2})-?(\d{2})/.exec(name || '');
+    return m ? m[1] + m[2] + m[3] : '00000000';
+}
+async function tryJson(url) {
+    try { const r = await fetch(url); if (r.ok) return await r.json(); } catch (e) {}
+    return null;
+}
+
+// способ 1: как в исходном файле (GitHub contents API; отдаёт максимум 1000 файлов)
+async function dsViaContents() {
+    const files = await tryJson('https://api.github.com/repos/' + DS_REPO + '/contents/data');
+    if (!files || !files.length) return null;
+    const list = files.filter(f => f.name.endsWith('.geojson')).sort((a, b) => b.name.localeCompare(a.name));
+    if (!list.length) return null;
+    const j = await tryJson(list[0].download_url);
+    return j ? { name: list[0].name, json: j } : null;
+}
+// способ 2: файлы по датам (последние 10 дней) — параллельно
+async function dsViaDates() {
+    const now = new Date(), cands = [];
+    for (let i = 0; i < 10; i++) {
+        const a = ymd(new Date(now.getTime() - i * 86400000));
+        const b = a.slice(0, 4) + '-' + a.slice(4, 6) + '-' + a.slice(6);
+        for (const base of DS_RAW_BASES) {
+            cands.push(base + 'data/deepstatemap_data_' + a + '.geojson');
+            cands.push(base + 'data/deepstatemap_data_' + b + '.geojson');
+        }
+    }
+    const got = (await Promise.all(cands.map(async u => ({ u, j: await tryJson(u) })))).filter(x => x.j);
+    if (!got.length) return null;
+    got.sort((x, y) => dsDate(y.u).localeCompare(dsDate(x.u)));
+    return { name: got[0].u.split('/').pop(), json: got[0].j };
+}
+// способ 3: полные списки файлов (jsDelivr, git tree)
+async function dsViaListing() {
+    try {
+        const r = await fetch('https://data.jsdelivr.com/v1/packages/gh/' + DS_REPO + '@main?structure=flat');
+        if (r.ok) {
+            const files = ((await r.json()).files || []).map(f => f.name).filter(n => /^\/data\/.*\.geojson$/.test(n)).sort();
+            if (files.length) {
+                const last = files[files.length - 1];
+                const j = await tryJson('https://cdn.jsdelivr.net/gh/' + DS_REPO + '@main' + last);
+                if (j) return { name: last.split('/').pop(), json: j };
+            }
+        }
+    } catch (e) {}
+    try {
+        const r = await fetch('https://api.github.com/repos/' + DS_REPO + '/git/trees/HEAD?recursive=1');
+        if (r.ok) {
+            const files = ((await r.json()).tree || []).map(n => n.path).filter(p => /^data\/.*\.geojson$/.test(p)).sort();
+            if (files.length) {
+                const last = files[files.length - 1];
+                for (const base of DS_RAW_BASES) { const j = await tryJson(base + last); if (j) return { name: last.split('/').pop(), json: j }; }
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
+async function fetchLatestDeepState() {
+    const res = (await Promise.all([dsViaContents(), dsViaDates()].map(p => p.catch(() => null)))).filter(Boolean);
+    if (res.length) { res.sort((a, b) => dsDate(b.name).localeCompare(dsDate(a.name))); return res[0]; }
+    const l = await dsViaListing();
+    if (l) return l;
+    throw new Error('DeepState не найден');
+}
+
+const dsPromise = fetchLatestDeepState()
+    .then(r => {
+        const d = r.json;
+        const feats = d.type === 'FeatureCollection' ? d.features
+                    : d.type === 'Feature' ? [d] : [{ type: 'Feature', properties: {}, geometry: d }];
+        if (!feats || !feats.length) throw new Error('пустой DS');
+        feats.sourceName = r.name;
+        console.log('DS source:', r.name);
+        return feats;
+    })
+    .catch(err => { console.warn('DS err:', err.message); return null; });
+
+// ============================================================
+// ЛОГИКА построения фронта
+//  • RU  = оккупированная территория из DeepState — КАК ЕСТЬ (Крым, ДНР, ЛНР, Запорожье,
+//          Херсонщина и всё остальное). Линия фронта не изменяется.
+//  • UA  = Украина \ RU, затем убираем «зелёные» ошмётки: узкие полоски и островки,
+//          которые возникают из-за разницы детализации границ (побережье, щели)
+//  • BUFFER = полоса РОВНО 2 км вдоль фронта, на стороне Украины, вплотную к RU
+//  • UA уменьшается на буфер → зоны не пересекаются, площадь не дублируется
+// ============================================================
+function pointIn(feature, lng, lat) {
+    try { return turf.booleanPointInPolygon([lng, lat], feature); } catch (e) { return false; }
+}
+
+// Запасной контур Крыма (с небольшим запасом) — применяется, только если в данных DeepState Крыма нет
+function crimeaFallback() {
+    const ring = [[32.42,45.36],[32.50,45.66],[32.95,45.80],[33.30,46.00],[33.60,46.18],[34.30,46.20],[34.85,46.15],
+        [35.10,45.95],[35.55,45.50],[36.00,45.42],[36.40,45.52],[36.70,45.40],[36.65,45.15],[36.45,45.00],[35.40,44.92],
+        [35.00,44.76],[34.50,44.60],[34.20,44.40],[33.75,44.30],[33.45,44.42],[33.35,44.55],[33.30,44.75],[33.35,45.05],
+        [33.00,45.15],[32.55,45.28],[32.42,45.36]];
+    return turf.polygon([ring]);
+}
+
+function buildFront(ukrRaw, fine, dsFeatures) {
+    const t0 = performance.now();
+    const ukr = simplifySafe(ukrRaw);
+
+    // 1) RU — данные DeepState без изменений (только лёгкое упрощение)
+    const polys = [];
+    dsFeatures.forEach(f => {
+        const g = f && (f.geometry || f);
+        if (!g || (g.type !== 'Polygon' && g.type !== 'MultiPolygon')) return;
+        polys.push(f.geometry ? f : turf.feature(g));
+    });
+    if (!polys.length) return null;
+    let ru = polys.length === 1 ? simplifySafe(polys[0]) : unionArray(polys.map(simplifySafe));
+    if (!ru) return null;
+    try { if (turf.area(ru) < 1e9) { console.warn('RU слишком мал'); return null; } } catch (e) {}
+    console.log('1️⃣ RU из DeepState');
+
+    // Крым должен быть оккупирован: если в данных его нет — добавляем запасной контур
+    if (!pointIn(ru, 34.10, 44.95) && !pointIn(ru, 33.52, 44.60)) {
+        const cr = safeBuffer(crimeaFallback(), 3) || crimeaFallback();
+        ru = unionArray([ru, cr]) || ru;
+        console.warn('⚠️ Крыма не было в данных — добавлен запасной контур');
+    }
+
+    // 2) UA = Украина \ RU
+    let ua = differenceRobust(ukr, ru) || ukr;
+    console.log('2️⃣ UA = Украина \\ RU');
+
+    // 3) чистим «зелёные» ошмётки (открытие с восстановлением углов): тонкие полоски шире 2r уходят,
+    //    крупная территория и линия фронта сохраняются
+    const r = fine ? 3 : 6;
+    try {
+        const shrunk = safeBuffer(ua, -r);
+        const zone = shrunk ? safeBuffer(shrunk, r * 1.5) : null;
+        if (zone) {
+            const cleaned = intersectRobust(ua, zone);
+            if (cleaned) ua = cleaned;
+        }
+    } catch (e) { console.warn('очистка полосок:', e); }
+    ua = filterSmallParts(ua, MIN_UA_PART_KM2) || ua;
+    console.log('3️⃣ ошмётки UA убраны');
+
+    // 4) буфер ровно 2 км — на стороне Украины, вплотную к RU
+    let strip = null;
+    try {
+        const ruB = safeBuffer(ru, BUFFER_WIDTH_KM);
+        if (ruB) {
+            strip = intersectRobust(ruB, ua);
+            strip = filterSmallParts(strip, 0.2);
+        }
+    } catch (e) { console.warn('буфер:', e); }
+    if (strip) {
+        ua = subtractFeature(ua, strip) || ua;
+        console.log('4️⃣ Буфер', BUFFER_WIDTH_KM, 'км:', Math.round(turf.area(strip) / 1e6), 'км²');
+    } else console.warn('Буфер не построился');
+
+    // «вся Украина» — для обрезки рисования
+    let omega = null;
+    try { omega = unionArray([ukr, ru]); } catch (e) {}
+
+    console.log('✅ расчёт:', Math.round(performance.now() - t0), 'мс');
+    return { ua, ru, strip, omega };
+}
+
+// Запасной вариант: без очистки и буфера — главное, чтобы фронт был виден
+function buildFrontSimple(ukrRaw, dsFeatures) {
+    const polys = dsFeatures.filter(f => f && f.geometry && /Polygon/.test(f.geometry.type));
+    const ru = polys.length === 1 ? polys[0] : unionArray(polys);
+    if (!ru) return null;
+    const ua = ukrRaw ? (differenceRobust(ukrRaw, ru) || ukrRaw) : null;
+    return { ua, ru, strip: null, omega: null };
+}
+
+Promise.all([ukrPromise, dsPromise])
+    .then(async ([ukr, dsFeatures]) => {
+        if (!dsFeatures || !dsFeatures.length) { showToast('⚠️ ' + t('toasts.frontErr') + ' (DeepState)'); return; }
+        if (!ukr) showToast('⚠️ ' + t('toasts.ukrBaseErr'));
+
+        setLoadingText('Расчёт зон и буфера 2 км…');
+        await tick();
+
+        let res = null;
+        if (ukr) {
+            try { res = buildFront(ukr.feature, ukr.fine, dsFeatures); }
+            catch (e) { console.warn('buildFront error:', e); }
+        }
+        if (!res) {
+            console.warn('Основной расчёт не удался — запасной вариант');
+            try { res = buildFrontSimple(ukr ? ukr.feature : null, dsFeatures); } catch (e) { console.warn('simple error:', e); }
+        }
+        if (!res) { showToast('⚠️ ' + t('toasts.frontErr')); return; }
+
+        UKR_FEATURE = res.omega || null;
+        history = [];
+        if (res.ua) history.push({ mode: 'ua', feature: res.ua, source: 'base' });
+        history.push({ mode: 'ru', feature: res.ru, source: 'deepstate' });
+        if (res.strip) history.push({ mode: 'buffer', feature: res.strip, source: 'auto-border' });
+        baseHistory = history.slice();
+        undoStack = []; captureLog = [];
+
+        invalidateCache();
+        redrawAll();
+        setupZoneHovers();
+        updateStats(false);
+
+        const d = dsDate(dsFeatures.sourceName);
+        const dateTxt = d !== '00000000' ? ` · ${d.slice(6)}.${d.slice(4, 6)}.${d.slice(0, 4)}` : '';
+        showToast('✅ ' + t('toasts.frontLoaded') + dateTxt + (res.strip ? '' : ' (без буфера)'));
+    })
+    .catch(err => {
+        console.warn('Ошибка загрузки:', err);
+        showToast('⚠️ ' + t('toasts.frontErr'));
+    })
+    .finally(() => hideLoading());
+
+// ============================================================
+// 8. Мышь
+// ============================================================
+let rightDrag = null, isDrawing = false, drawPoints = [], drawPreview = null;
+const mapContainer = map.getContainer();
+
+mapContainer.addEventListener('mousedown', (e) => {
+    if (e.button === 2) {
+        e.preventDefault();
+        rightDrag = { startX: e.clientX, startY: e.clientY, center: map.getCenter(), zoom: map.getZoom() };
+        mapContainer.classList.add('panning');
+    }
+});
+
+window.addEventListener('mousemove', (e) => {
+    if (!rightDrag) return;
+    const dx = e.clientX - rightDrag.startX;
+    const dy = e.clientY - rightDrag.startY;
+    const sp = map.project(rightDrag.center, rightDrag.zoom);
+    map.setView(map.unproject(L.point(sp.x - dx, sp.y - dy), rightDrag.zoom), rightDrag.zoom, { animate: false });
+});
+
+window.addEventListener('mouseup', (e) => {
+    if (e.button === 2 && rightDrag) { rightDrag = null; mapContainer.classList.remove('panning'); }
+});
+
+mapContainer.addEventListener('contextmenu', (e) => e.preventDefault());
+
+map.on('mousedown', (e) => {
+    if (e.originalEvent.button !== 0 || rightDrag) return;
+    isDrawing = true;
+    drawPoints = [e.latlng];
+    const c = COLORS[currentMode];
+    drawPreview = L.polygon([e.latlng, e.latlng], {
+        color: c.stroke, fillColor: c.fill, fillOpacity: 0.35, weight: 3, dashArray: '8, 5', interactive: false
+    }).addTo(map);
+    mapContainer.classList.add('drawing');
+});
+
+map.on('mousemove', (e) => {
+    if (!isDrawing) return;
+    drawPoints.push(e.latlng);
+    if (drawPreview) drawPreview.setLatLngs(drawPoints);
+});
+
+map.on('mouseup', (e) => {
+    if (e.originalEvent.button !== 0 || !isDrawing) return;
+    isDrawing = false;
+    mapContainer.classList.remove('drawing');
+    if (drawPreview) { map.removeLayer(drawPreview); drawPreview = null; }
+    if (drawPoints.length < 3) { drawPoints = []; showToast(t('toasts.tooFewPoints')); return; }
+
+    const coords = drawPoints.map(ll => [ll.lng, ll.lat]);
+    const first = coords[0], last = coords[coords.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first);
+    drawPoints = [];
+
+    let feature;
+    try {
+        feature = turf.polygon([coords]);
+        if (turf.area(feature) < 100000) { showToast(t('toasts.tooSmall')); return; }
+    } catch (err) { showToast(t('toasts.selfIntersect')); return; }
+
+    let finalFeature = cleanPolygon(feature);
+    // рисовать можно только в пределах Украины — иначе зоны «вылезают» в Россию, Польшу и море
+    if (UKR_FEATURE) {
+        const clipped = intersectRobust(finalFeature, UKR_FEATURE);
+        if (!clipped || turf.area(clipped) < 100000) { showToast(t('toasts.outside')); return; }
+        finalFeature = clipped;
+    }
+    addCaptureBatch(currentMode, [finalFeature]);
+});
+
+function cleanPolygon(feature) {
+    let pieces = null;
+    try {
+        const unkinked = turf.unkinkPolygon(feature);
+        if (unkinked && unkinked.features && unkinked.features.length) pieces = unkinked.features;
+    } catch (e) {}
+    if (!pieces || pieces.length === 0) return feature;
+    if (pieces.length === 1) return pieces[0];
+    return unionArray(pieces) || pieces[0];
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isDrawing) {
+        isDrawing = false;
+        if (drawPreview) { map.removeLayer(drawPreview); drawPreview = null; }
+        drawPoints = [];
+        mapContainer.classList.remove('drawing');
+        showToast(t('toasts.cancel'));
+    }
+});
+
+// ============================================================
+// 9. Эффекты
+// ============================================================
+function showRipple(latlng, color) {
+    try {
+        const pt = map.latLngToContainerPoint(latlng);
+        const div = document.createElement('div');
+        div.className = 'ripple';
+        div.style.left = pt.x + 'px';
+        div.style.top = pt.y + 'px';
+        div.style.borderColor = color;
+        mapContainer.appendChild(div);
+        setTimeout(() => { try { div.remove(); } catch(e) {} }, 1700);
+    } catch(e) {}
+}
+
+function showFloatingArea(latlng, text, color) {
+    try {
+        const pt = map.latLngToContainerPoint(latlng);
+        const div = document.createElement('div');
+        div.className = 'float-area';
+        div.textContent = text;
+        div.style.left = pt.x + 'px';
+        div.style.top = pt.y + 'px';
+        div.style.color = color;
+        mapContainer.appendChild(div);
+        setTimeout(() => { try { div.remove(); } catch(e) {} }, 2300);
+    } catch(e) {}
+}
+
+function getFeatureCenter(feature) {
+    try {
+        const c = turf.centerOfMass(feature);
+        const [lng, lat] = c.geometry.coordinates;
+        return L.latLng(lat, lng);
+    } catch(e) { return map.getCenter(); }
+}
+
+function animateValue(el, target, duration = 700) {
+    const currentText = el.textContent.replace(/[^\d]/g, '');
+    const start = parseInt(currentText) || 0;
+    if (start === target) return;
+    if (duration <= 0) { el.textContent = target.toLocaleString(currentLang === 'ua' ? 'uk-UA' : 'ru-RU'); return; }
+    const startTime = performance.now();
+    function frame(now) {
+        const t2 = Math.min((now - startTime) / duration, 1);
+        const eased = 1 - Math.pow(1 - t2, 3);
+        const cur = Math.round(start + (target - start) * eased);
+        el.textContent = cur.toLocaleString(currentLang === 'ua' ? 'uk-UA' : 'ru-RU');
+        if (t2 < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+}
+
+function bumpElement(el) { el.classList.add('bump'); setTimeout(() => el.classList.remove('bump'), 700); }
+
+// ============================================================
+// 10. Snapshot
+// ============================================================
+function snapshotCurrentState() {
+    snapshotLayer.clearLayers();
+    drawnItems.eachLayer(gl => {
+        if (!gl.eachLayer) return;
+        gl.eachLayer(sub => {
+            if (!sub.getLatLngs) return;
+            try {
+                const o = sub.options;
+                const copy = L.polygon(sub.getLatLngs(), {
+                    pane: 'snapshotPane', interactive: false,
+                    className: 'zone-path',
+                    color: o.color, fillColor: o.fillColor, fillOpacity: o.fillOpacity,
+                    weight: o.weight, opacity: o.opacity, lineCap: 'round', lineJoin: 'round'
+                }).addTo(snapshotLayer);
+                if (copy._path && sub._mode) copy._path.setAttribute('data-mode', sub._mode);
+            } catch(e) {}
+        });
+    });
+}
+
+// Останавливает текущую анимацию перехода и убирает все временные слои
+function clearAllTempLayers() {
+    stopAnimation();
+    for (let i = activeTempLayers.length - 1; i >= 0; i--) {
+        try { if (map.hasLayer(activeTempLayers[i])) map.removeLayer(activeTempLayers[i]); } catch(e) {}
+    }
+    activeTempLayers.length = 0;
+    try { map.getPane('overlayPane').style.opacity = ''; } catch(e) {}
+}
+
+// ============================================================
+// 11–12. Захват + буфер 2 км на линии контакта
+// ============================================================
+let animGeneration = 0;
+const TRANSITION_MS = 1600;
+
+// Чистая функция: применяет захват к истории и возвращает новую историю.
+function applyCapture(hist, mode, features) {
+    const enemy = mode === 'ru' ? 'ua' : 'ru';
+    const A = features.length === 1 ? features[0] : (unionArray(features) || features[0]);
+
+    // 1) захваченное вырезаем из территории противника и из старого буфера
+    const kept = [];
+    for (const h of hist) {
+        if (h.mode === mode) { kept.push(h); continue; }
+        const rest = subtractFeature(h.feature, A);
+        if (rest) kept.push({ mode: h.mode, feature: rest, source: h.source });
+    }
+
+    // 2) новый буфер: полоса 2 км на территории противника вплотную к захвату
+    let strip = null;
+    try {
+        const bufA = safeBuffer(A, BUFFER_WIDTH_KM);
+        if (bufA) {
+            const parts = [];
+            for (const h of kept) {
+                if (h.mode !== enemy) continue;
+                const inter = intersectRobust(h.feature, bufA);
+                if (inter && turf.area(inter) > 1000) parts.push(inter);
+            }
+            strip = filterSmallParts(unionArray(parts), 0.1);
+        }
+    } catch (e) { console.warn('buffer err', e); strip = null; }
+
+    // 3) вычитаем буфер из территории противника — зоны не пересекаются
+    const out = [];
+    for (const h of kept) {
+        if (strip && h.mode === enemy) {
+            const r = subtractFeature(h.feature, strip);
+            if (r) out.push({ mode: h.mode, feature: r, source: h.source });
+        } else out.push(h);
+    }
+    features.forEach(f => out.push({ mode, feature: f, source: 'user' }));
+    if (strip) out.push({ mode: 'buffer', feature: strip, source: 'auto' });
+    return { history: out, strip, area: A };
+}
+
+function addCaptureBatch(mode, features) {
+    if (!features || !features.length) return;
+    const gen = ++animGeneration;
+    clearAllTempLayers();
+
+    let captureAreaKm2 = 0;
+    features.forEach(f => { try { captureAreaKm2 += turf.area(f) / 1e6; } catch(e) {} });
+    captureAreaKm2 = Math.round(captureAreaKm2);
+    const captureCenter = getFeatureCenter(features[0]);
+
+    snapshotCurrentState();
+
+    undoStack.push({ history: history, log: captureLog });
+    const res = applyCapture(history, mode, features);
+    history = res.history;
+    captureLog = captureLog.concat([{ mode, features }]);
+    invalidateCache();
+
+    redrawAll();
+    setupZoneHovers();
+
+    showRipple(captureCenter, COLORS[mode].fill);
+    setTimeout(() => {
+        if (animGeneration === gen) {
+            showFloatingArea(captureCenter, `+${captureAreaKm2.toLocaleString('ru-RU')} км²`, COLORS[mode].glow);
+        }
+    }, 200);
+
+    playBeep(mode === 'ru' ? 520 : 660, 0.18, 0.06);
+
+    const pieces = features.map(f => ({ mode, feature: f }));
+    if (res.strip) pieces.push({ mode: 'buffer', feature: res.strip });
+    playTransition(mode, pieces);
+
+    updateStats(true);
+    let msg = `⚔️ ${t(mode)}: ${t('toasts.captured')}`;
+    if (res.strip) msg += ` · 🛡️ ${t('toasts.bufferAuto')}`;
+    showToast(msg);
+}
+
+// ============================================================
+// 13. Волна перехода территории
+// ------------------------------------------------------------
+// Как это работает:
+//  • снизу лежит снимок СТАРОЙ карты (snapshotPane), сверху — только НОВЫЕ куски (wavePane:
+//    захваченная территория + буфер), настоящий слой карты на время анимации спрятан;
+//  • из точки внутри захваченной области расходится круглая волна с мягким краем (радиальный
+//    градиент): внутри волны старые цвета плавно растворяются, а новые проявляются;
+//  • вдоль фронта волны бежит светящееся кольцо, обрезанное по форме захвата;
+//  • в конце настоящий слой возвращается — цвета совпадают, поэтому шва не видно.
+// ============================================================
+const SVGNS = 'http://www.w3.org/2000/svg';
+let activeAnim = null;
+
+function svgEl(tag, attrs) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+    return e;
+}
+
+function stopAnimation() {
+    if (activeAnim) { try { activeAnim.finish(); } catch (e) {} }
+    activeAnim = null;
+}
+
+// контур фичи в координатах слоёв Leaflet (в них же рисуются все svg-панели)
+function geoToPathD(feature) {
+    const out = [];
+    splitToPolygons(feature).forEach(poly => {
+        const g = poly.geometry;
+        if (!g || g.type !== 'Polygon') return;
+        g.coordinates.forEach(ring => {
+            let d = '';
+            ring.forEach((c, i) => {
+                const pt = map.latLngToLayerPoint([c[1], c[0]]);
+                d += (i ? 'L' : 'M') + pt.x.toFixed(1) + ' ' + pt.y.toFixed(1);
+            });
+            out.push(d + 'Z');
+        });
+    });
+    return out.join('');
+}
+
+function playTransition(mode, pieces) {
+    stopAnimation();
+    const live = (pieces || []).filter(p => p && p.feature);
+    const snapPane = map.getPane('snapshotPane');
+    const wavePane = map.getPane('wavePane');
+    const overlayPane = map.getPane('overlayPane');
+
+    const snapSvg = snapPane.querySelector('svg');
+    let waveLayer = null, cleaned = false, rafId = 0;
+    const nodes = [];       // svg-узлы, которые нужно убрать
+    let snapG = null, waveG = null;
+
+    const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        cancelAnimationFrame(rafId);
+        try { map.off('zoomstart viewreset', onView); } catch (e) {}
+        try { snapG && snapG.removeAttribute('mask'); } catch (e) {}
+        try { waveG && waveG.removeAttribute('mask'); } catch (e) {}
+        nodes.forEach(n => { try { n.parentNode && n.parentNode.removeChild(n); } catch (e) {} });
+        try { waveLayer && map.removeLayer(waveLayer); } catch (e) {}
+        try { snapshotLayer.clearLayers(); } catch (e) {}
+        overlayPane.style.opacity = '';
+        if (activeAnim === me) activeAnim = null;
+    };
+    const me = { finish: cleanup };
+    const onView = () => cleanup();
+
+    try {
+        if (!live.length || !snapSvg) { cleanup(); return; }
+
+        // 1) слой новых кусков
+        waveLayer = L.featureGroup().addTo(map);
+        live.forEach(p => {
+            try {
+                L.geoJSON(p.feature, { pane: 'wavePane', interactive: false, style: () => zoneStyle(p.mode, true) }).addTo(waveLayer);
+            } catch (e) {}
+        });
+        const waveSvg = wavePane.querySelector('svg');
+        if (!waveSvg) { cleanup(); return; }
+        snapG = snapSvg.querySelector(':scope > g');
+        waveG = waveSvg.querySelector(':scope > g');
+        if (!snapG || !waveG) { cleanup(); return; }
+
+        // 2) геометрия волны: центр — точка внутри захвата, радиус — до самой дальней вершины
+        const dAll = live.map(p => geoToPathD(p.feature)).join('');
+        let originLL;
+        try {
+            const pt = turf.pointOnFeature(live[0].feature);
+            originLL = L.latLng(pt.geometry.coordinates[1], pt.geometry.coordinates[0]);
+        } catch (e) { originLL = getFeatureCenter(live[0].feature); }
+        const o = map.latLngToLayerPoint(originLL);
+        let maxR = 10;
+        live.forEach(p => {
+            try {
+                turf.coordAll(p.feature).forEach(c => {
+                    const q = map.latLngToLayerPoint([c[1], c[0]]);
+                    maxR = Math.max(maxR, Math.hypot(q.x - o.x, q.y - o.y));
+                });
+            } catch (e) {}
+        });
+        const FEATHER = 70;                                        // макс. ширина мягкого края, px
+        const dur = Math.max(1400, Math.min(3200, 1000 + maxR * 1.8));
+
+        // 3) svg: мягкая «волна» (маска с радиальным градиентом) для каждой панели
+        const uid = Math.random().toString(36).slice(2, 8);
+        const BIG = { maskUnits: 'userSpaceOnUse', x: -200000, y: -200000, width: 400000, height: 400000 };
+        const defsOf = svg => {
+            let d = svg.querySelector(':scope > defs');
+            if (!d) { d = svgEl('defs'); svg.insertBefore(d, svg.firstChild); }
+            return d;
+        };
+        const makeFeather = (svg, id) => {
+            const defs = defsOf(svg);
+            const grad = svgEl('radialGradient', { id: 'gr-' + id, gradientUnits: 'userSpaceOnUse', cx: o.x, cy: o.y, r: 1 });
+            const stops = [[0, 1], [0.5, 1], [0.75, 0.45], [1, 0]].map(([off, a]) => {
+                const st = svgEl('stop', { offset: off, 'stop-color': '#fff', 'stop-opacity': a });
+                grad.appendChild(st); return st;
+            });
+            const circle = svgEl('circle', { cx: o.x, cy: o.y, r: 1, fill: 'url(#gr-' + id + ')' });
+            const mask = svgEl('mask', Object.assign({ id: 'fm-' + id }, BIG));
+            mask.appendChild(circle);
+            defs.appendChild(grad); defs.appendChild(mask);
+            nodes.push(grad, mask);
+            return { grad, stops, circle, defs };
+        };
+
+        // старый снимок: виден везде, кроме области захвата, куда дошла волна
+        const fo = makeFeather(snapSvg, 'o' + uid);
+        const maskOld = svgEl('mask', Object.assign({ id: 'mo-' + uid }, BIG));
+        maskOld.appendChild(svgEl('rect', { x: -200000, y: -200000, width: 400000, height: 400000, fill: '#fff' }));
+        const holeG = svgEl('g', { mask: 'url(#fm-o' + uid + ')' });
+        holeG.appendChild(svgEl('path', { d: dAll, fill: '#000', 'fill-rule': 'evenodd' }));
+        maskOld.appendChild(holeG);
+        fo.defs.appendChild(maskOld); nodes.push(maskOld);
+        snapG.setAttribute('mask', 'url(#mo-' + uid + ')');
+
+        // новые куски: видны только внутри волны
+        const fn = makeFeather(waveSvg, 'n' + uid);
+        waveG.setAttribute('mask', 'url(#fm-n' + uid + ')');
+
+        // светящееся кольцо на фронте волны, обрезанное по форме захвата
+        const maskRing = svgEl('mask', Object.assign({ id: 'mr-' + uid }, BIG));
+        maskRing.appendChild(svgEl('path', { d: dAll, fill: '#fff', 'fill-rule': 'evenodd' }));
+        fn.defs.appendChild(maskRing); nodes.push(maskRing);
+        const glow = COLORS[mode].glow;
+        const ringG = svgEl('g', { mask: 'url(#mr-' + uid + ')' });
+        const ring = svgEl('circle', { cx: o.x, cy: o.y, r: 1, fill: 'none', stroke: glow, 'stroke-width': 4, 'stroke-opacity': 0.9 });
+        ring.style.filter = 'drop-shadow(0 0 7px ' + glow + ')';
+        ringG.appendChild(ring); waveSvg.appendChild(ringG); nodes.push(ringG);
+
+        // 4) прячем настоящий слой на время анимации и запускаем волну
+        overlayPane.style.transition = 'none';
+        overlayPane.style.opacity = '0';
+        map.on('zoomstart viewreset', onView);
+        activeAnim = me;
+
+        const setR = (f, r, fw) => {
+            const rr = Math.max(r, 0.5), k = Math.min(1, fw / rr);
+            f.circle.setAttribute('r', rr); f.grad.setAttribute('r', rr);
+            f.stops[1].setAttribute('offset', (1 - k).toFixed(4));
+            f.stops[2].setAttribute('offset', (1 - k * 0.5).toFixed(4));
+        };
+        const t0 = performance.now();
+        const frame = now => {
+            if (cleaned) return;
+            const p = Math.min(1, (now - t0) / dur);
+            const e = -(Math.cos(Math.PI * p) - 1) / 2;            // плавный старт и финиш
+            const R = (maxR + FEATHER) * e;
+            const fw = Math.min(FEATHER, 0.4 * R);
+            setR(fo, R, fw); setR(fn, R, fw);
+            ring.setAttribute('r', Math.max(0.5, R - fw * 0.55));
+            ring.setAttribute('stroke-opacity', (0.95 * (1 - p * p)).toFixed(3));
+            ring.setAttribute('stroke-width', (1.5 + 3 * (1 - p)).toFixed(2));
+            if (p < 1) rafId = requestAnimationFrame(frame);
+            else cleanup();
+        };
+        setR(fo, 0.5, 0); setR(fn, 0.5, 0);
+        rafId = requestAnimationFrame(frame);
+    } catch (err) {
+        console.warn('transition error:', err);
+        cleanup();
+    }
+}
+
+// ============================================================
+// 14. Слияние
+// ============================================================
+function mergeFeatures(features) {
+    if (!features || !features.length) return null;
+    if (features.length === 1) return features[0];
+    return unionArray(features);
+}
+
+function invalidateCache() { mergedCache.ru = null; mergedCache.ua = null; mergedCache.buffer = null; }
+function getMerged(mode) {
+    if (mergedCache[mode]) return mergedCache[mode];
+    const polys = history.filter(h => h.mode === mode).map(h => h.feature);
+    mergedCache[mode] = mergeFeatures(polys);
+    return mergedCache[mode];
+}
+
+// ============================================================
+// 15. Отрисовка — ua → ru → buffer, буфер полупрозрачный
+// ============================================================
+function zoneStyle(mode, forWave) {
+    const c = COLORS[mode];
+    return {
+        className: 'zone-path',
+        color: mode === 'buffer' ? '#ffffff' : c.stroke,
+        fillColor: c.fill,
+        fillOpacity: mode === 'buffer' ? 0.55 : (mode === 'ru' ? 0.62 : 0.5),
+        weight: (forWave && mode !== 'buffer') ? 0 : (mode === 'buffer' ? 1.6 : (mode === 'ua' ? 1 : 1.8)),
+        opacity: mode === 'buffer' ? 0.85 : (mode === 'ua' ? 0.55 : 0.95),
+        dashArray: null,
+        lineCap: 'round',
+        lineJoin: 'round'
+    };
+}
+
+function redrawAll() {
+    drawnItems.clearLayers();
+    ['ua', 'ru', 'buffer'].forEach(mode => {
+        const merged = getMerged(mode);
+        if (!merged) return;
+        const c = COLORS[mode];
+        try {
+            const layer = L.geoJSON(merged, {
+                style: zoneStyle(mode, false),
+                interactive: false
+            });
+            layer.eachLayer(sub => {
+                if (sub._path) sub._path.setAttribute('data-mode', mode);
+                sub._mode = mode;
+            });
+            layer.addTo(drawnItems);
+        } catch (err) {}
+    });
+}
+
+function setupZoneHovers() {
+    setTimeout(() => {
+        document.querySelectorAll('.leaflet-overlay-pane svg path.zone-path').forEach(p => {
+            if (p._hoverSetup) return;
+            p._hoverSetup = true;
+            p.style.pointerEvents = 'stroke';
+            p.style.cursor = 'help';
+        });
+    }, 100);
+}
+
+// ============================================================
+// 16. UI
+// ============================================================
+function setMode(mode) {
+    if (mode !== 'ru' && mode !== 'ua') return;
+    currentMode = mode;
+    ['ru', 'ua'].forEach(m => {
+        const btn = document.getElementById('btn-' + m);
+        if (btn) btn.classList.toggle('active', m === mode);
+    });
+    const lbl = document.getElementById('current-mode-label');
+    if (lbl) lbl.textContent = t(mode);
+    const dot = document.getElementById('mode-dot');
+    if (dot) {
+        dot.style.background = COLORS[mode].fill;
+        dot.style.boxShadow = `0 0 8px ${COLORS[mode].glow}`;
+    }
+}
+
+function resetHistory() {
+    ++animGeneration;
+    clearAllTempLayers();
+    snapshotLayer.clearLayers();
+    history = baseHistory.slice();
+    undoStack = [];
+    captureLog = [];
+    invalidateCache();
+    redrawAll();
+    setupZoneHovers();
+    updateStats(false);
+}
+
+function undo() {
+    ++animGeneration;
+    clearAllTempLayers();
+    snapshotLayer.clearLayers();
+    const s = undoStack.pop();
+    if (!s) { showToast(t('toasts.nothingToUndo')); return; }
+    // возвращаем полный снимок — вместе с вырезанным фронтом и буфером
+    history = s.history;
+    captureLog = s.log;
+    invalidateCache();
+    redrawAll();
+    setupZoneHovers();
+    updateStats(false);
+    showToast('↩️ ' + t('toasts.undone'));
+}
+
+function clearAll() { resetHistory(); showToast('🗑 ' + t('toasts.cleared')); }
+function resetToFront() { resetHistory(); showToast('🔄 ' + t('toasts.reset')); }
+
+function saveState() {
+    try {
+        localStorage.setItem('frontmap_state_v2', JSON.stringify(captureLog));
+        showToast('💾 ' + t('toasts.saved'));
+    } catch (e) { showToast('⚠️ ' + t('toasts.saveErr')); }
+}
+
+function loadState() {
+    try {
+        const raw = localStorage.getItem('frontmap_state_v2');
+        if (!raw) { showToast(t('toasts.noSave')); return; }
+        const saved = JSON.parse(raw);
+        ++animGeneration;
+        clearAllTempLayers();
+        snapshotLayer.clearLayers();
+        history = baseHistory.slice();
+        undoStack = [];
+        captureLog = [];
+        for (const e of saved) {              // повторяем ходы по порядку
+            undoStack.push({ history: history, log: captureLog });
+            history = applyCapture(history, e.mode, e.features).history;
+            captureLog = captureLog.concat([e]);
+        }
+        invalidateCache();
+        redrawAll();
+        setupZoneHovers();
+        updateStats(false);
+        showToast('📂 ' + t('toasts.loaded'));
+    } catch (e) { showToast('⚠️ ' + t('toasts.loadErr')); }
+}
+
+function updateStats(animate = true) {
+    const counts = { ru: 0, ua: 0, buffer: 0 };
+    const areas  = { ru: 0, ua: 0, buffer: 0 };
+    ['ru', 'ua', 'buffer'].forEach(mode => {
+        const polys = history.filter(h => h.mode === mode).map(h => h.feature);
+        counts[mode] = polys.length;
+        const merged = getMerged(mode);
+        if (merged) { try { areas[mode] = Math.round(turf.area(merged) / 1e6); } catch(e) {} }
+    });
+
+    const dur = animate ? 700 : 0;
+    const elStatRu = document.getElementById('stat-ru');
+    const elStatUa = document.getElementById('stat-ua');
+    const elStatBuf = document.getElementById('stat-buffer');
+    const elAreaRu = document.getElementById('area-ru');
+    const elAreaUa = document.getElementById('area-ua');
+    const elAreaBuf = document.getElementById('area-buffer');
+
+    if (animate) {
+        if (parseInt(elStatRu.textContent) !== counts.ru) bumpElement(elStatRu.parentElement);
+        if (parseInt(elStatUa.textContent) !== counts.ua) bumpElement(elStatUa.parentElement);
+        if (parseInt(elStatBuf.textContent) !== counts.buffer) bumpElement(elStatBuf.parentElement);
+    }
+
+    animateValue(elStatRu, counts.ru, dur);
+    animateValue(elStatUa, counts.ua, dur);
+    animateValue(elStatBuf, counts.buffer, dur);
+    animateValue(elAreaRu, areas.ru, dur);
+    animateValue(elAreaUa, areas.ua, dur);
+    animateValue(elAreaBuf, areas.buffer, dur);
+}
+
+// ============================================================
+// 17. Клавиши
+// ============================================================
+document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.ctrlKey || e.metaKey) {
+        if (['z','Z','я','Я'].includes(e.key)) { e.preventDefault(); undo(); }
+        else if (['s','S','ы','Ы'].includes(e.key)) { e.preventDefault(); saveState(); }
+        else if (['o','O','щ','Щ'].includes(e.key)) { e.preventDefault(); loadState(); }
+        return;
+    }
+    if (e.key === '1') setMode('ru');
+    else if (e.key === '2') setMode('ua');
+});
+
+// ============================================================
+// 18. Старт
+// ============================================================
+try {
+    const savedLang = localStorage.getItem('frontmap_lang');
+    if (savedLang && i18n[savedLang]) currentLang = savedLang;
+} catch(e) {}
+
+document.getElementById('sound-toggle').classList.toggle('on', soundEnabled);
+document.getElementById('sound-toggle').textContent = soundEnabled ? '🔊' : '🔇';
+
+setLang(currentLang);
+setMode('ru');
+updateStats(false);
+
+window.setMode = setMode;
+window.setLang = setLang;
+window.undo = undo;
+window.clearAll = clearAll;
+window.resetToFront = resetToFront;
+window.saveState = saveState;
+window.loadState = loadState;
+window.toggleSound = toggleSound;
+</script>
+
+</body>
+</html>
